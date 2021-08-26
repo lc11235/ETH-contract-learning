@@ -523,3 +523,273 @@ contract ZombieFeeding is ZombieFactory {
 }
 ```
 
+## 七、实战应用
+
+我们来把feedAndMultiply函数写完吧。
+
+获取新的僵尸DNA的公式很简单：计算猎食僵尸DNA和被猎僵尸DNA之间的平均值。
+
+示例：
+
+```solidity
+function testDnaSplicing() public {
+  uint zombieDna = 2222222222222222;
+  uint targetDna = 4444444444444444;
+  uint newZombieDna = (zombieDna + targetDna) / 2;
+  // newZombieDna 将等于 3333333333333333
+}
+```
+
+以后，我们也可以让函数变得复杂些，比方给新的僵尸的DNA增加一些随机性之类的。但现在先从最简单的开始——以后还可以回来完善它。
+
+#### 实战演练
+
+* 1.首先我们确保_targetDna不长于16位。要做到这一点，我们可以设置\_targetDna为\_targetDna%dnaModulus，并且只取其最后16位数字。
+* 2.接下来为我们的函数声明一个名叫newDna的uint类型的变量，并将其设置为myZombie的DNA和_targetDna的平均值（如上例所示）。
+
+> 注意：您可以用myZombie.name或myZombie.dna访问myZombie的属性。
+
+* 一旦我们计算出新的DNA，再调用_createZombie就可以生成新的僵尸了。如果你忘了调用这个函数所需要的参数，可以查看zombiefactory.sol选项卡。请注意，需要先给它命名，所以现在我们把新的僵尸的名字设为NoName——我们回头可以编写一个函数来更改僵尸的名字。
+
+> 注意：对于Solidity高手，你可能会注意到我们的代码存在一个问题。别担心，下一章会解决这个问题的。
+
+zombiefeeding.sol
+
+```solidity
+pragma solidity ^0.4.19;
+
+import "./zombiefactory.sol";
+
+contract ZombieFeeding is ZombieFactory {
+
+  function feedAndMultiply(uint _zombieId, uint _targetDna) public {
+    require(msg.sender == zombieToOwner[_zombieId]);
+    Zombie storage myZombie = zombies[_zombieId];
+    // start here
+
+    _targetDna = _targetDna % dnaModulus;
+    uint newDna = (myZombie.dna + _targetDna) / 2;
+
+    _createZombie("NoName", newDna);
+
+  }
+
+}
+```
+
+## 八、函数可见性
+
+我们上面的代码有问题！
+
+编译的时候编译器就会报错。
+
+错误在于，我们尝试从ZombieFeeding中调用_createZombie函数，但\_createZombie却是ZombieFactory的private函数。这意味着任何继承自ZombieFactory的子合约都不能访问它。
+
+#### internal和external
+
+除public和private属性之外，Solidity还使用了另外两个描述函数可见性的修饰词：internal（内部）和external（外部）。
+
+internal和private类似，不过，如果某个合约继承自其父合约，这个合约即可以访问父合约中定义的“内部”函数。
+
+external与public类似，只不过这些函数只能在合约之外调用——它们不能被合约内的其他函数调用。稍后我们将讨论什么时候使用external和public。
+
+声明函数internal或external类型的语法，与声明private和public类型相同。
+
+```solidity
+contract Sandwich {
+  uint private sandwichesEaten = 0;
+
+  function eat() internal {
+    sandwichesEaten++;
+  }
+}
+
+contract BLT is Sandwich {
+  uint private baconSandwichesEaten = 0;
+
+  function eatWithBacon() public returns (string) {
+    baconSandwichesEaten++;
+    // 因为eat() 是internal 的，所以我们能在这里调用
+    eat();
+  }
+}
+```
+
+#### 实战演练
+
+* 将_createZombie()函数的属性从private改为internal，使得其他的合约也能访问到它。
+
+我们已经成功把你的注意力集中到zombiefactory.sol这个基类合约上了。
+
+```solidity
+pragma solidity ^0.4.19;
+
+contract ZombieFactory {
+
+    event NewZombie(uint zombieId, string name, uint dna);
+
+    uint dnaDigits = 16;
+    uint dnaModulus = 10 ** dnaDigits;
+
+    struct Zombie {
+        string name;
+        uint dna;
+    }
+
+    Zombie[] public zombies;
+
+    mapping (uint => address) public zombieToOwner;
+    mapping (address => uint) ownerZombieCount;
+
+    // 在这里修改函数的功能 private => internal
+    function _createZombie(string _name, uint _dna) internal {
+        uint id = zombies.push(Zombie(_name, _dna)) - 1;
+        zombieToOwner[id] = msg.sender;
+        ownerZombieCount[msg.sender]++;
+        NewZombie(id, _name, _dna);
+    }
+
+    function _generateRandomDna(string _str) private view returns (uint) {
+        uint rand = uint(keccak256(_str));
+        return rand % dnaModulus;
+    }
+
+    function createRandomZombie(string _name) public {
+        require(ownerZombieCount[msg.sender] == 0);
+        uint randDna = _generateRandomDna(_name);
+        _createZombie(_name, randDna);
+    }
+
+}
+```
+
+## 九、与其他合约的交互
+
+是时候让我们的僵尸去捕猎了！那僵尸最喜欢的食物时什么呢？
+
+为了做到这一点，我们要读出CryptoKitties智能合约中的kittyDna。这些数据时公开存储在区块链上的。
+
+别担心——我们的游戏并不会伤害到任何真正的CryptoKitty。我们只读取CryptoKitties数据，但却无法在物理上删除它。
+
+#### 与其他合约的交互
+
+如果我们的合约需要和区块链上的其他的合约回话，则需要想定义一个interface（接口）。
+
+先举一个简单的例子。假设区块链上有这么一个合约：
+
+```solidity
+contract LuckyNumber {
+  mapping(address => uint) numbers;
+
+  function setNum(uint _num) public {
+    numbers[msg.sender] = _num;
+  }
+
+  function getNum(address _myAddress) public view returns (uint) {
+    return numbers[_myAddress];
+  }
+}
+```
+
+这是个很简单的合约，您可以用它存储自己的幸运号码，并将其与您的以太坊地址关联。这样其他人就可以通过您的地址查找您的幸运号码了。
+
+现在假设我们有一个外部合约，使用getNum函数可读取其中的数据。
+
+首先，我们定义LuckyNumber合约的interface：
+
+```solidity
+contract NumberInterface {
+  function getNum(address _myAddress) public view returns (uint);
+}
+```
+
+请注意，这个过程虽然看起来像在定义一个合约，但其实内里不同：
+
+首先，我们只声明了要与之交互的函数——在本例中为getNum——在其中我们没有使用任何其他的函数或状态变量。
+
+其次，我们并没有使用大括号（{和}）定义函数体，我们单单用分号（;）结束了函数声明。这使它起来像一个合约框架。
+
+编译器就是靠这些特征认出它是一个接口的。
+
+在我们的app代码中使用这个接口，合约就知道其他合约时怎样的，应该如何调用，以及可期待什么类型的返回值。
+
+在下一章中，我们将真正调用其他合约的函数。目前我们只要声明一个接口，用于调用CryptoKitties合约就行了。
+
+#### 实战演练
+
+我们已经为你查看过了CryptoKitties的源代码，并且找到了一个名为getKitty的函数，它返回所有的加密猫的数据，包括它的“基因”（我们的僵尸游戏要用它来生成新的僵尸）。
+
+该函数如下所示：
+
+```solidity
+function getKitty(uint256 _id) external view returns (
+    bool isGestating,
+    bool isReady,
+    uint256 cooldownIndex,
+    uint256 nextActionAt,
+    uint256 siringWithId,
+    uint256 birthTime,
+    uint256 matronId,
+    uint256 sireId,
+    uint256 generation,
+    uint256 genes
+) {
+    Kitty storage kit = kitties[_id];
+
+    // if this variable is 0 then it's not gestating
+    isGestating = (kit.siringWithId != 0);
+    isReady = (kit.cooldownEndBlock <= block.number);
+    cooldownIndex = uint256(kit.cooldownIndex);
+    nextActionAt = uint256(kit.cooldownEndBlock);
+    siringWithId = uint256(kit.siringWithId);
+    birthTime = uint256(kit.birthTime);
+    matronId = uint256(kit.matronId);
+    sireId = uint256(kit.sireId);
+    generation = uint256(kit.generation);
+    genes = kit.genes;
+}
+```
+
+这个函数看起来跟我们习惯的函数不太一样。它竟然返回了一堆不同的值！如果你用过JavaScript之类的编程语言，一定会感到奇怪——在Solidity中，您可以让一个函数返回多个值。
+
+现在我们知道这个函数长什么样的了，就可以用它来创建一个接口：
+
+* 1.定义一个名为KittyInterface的接口。请注意，因为我们使用了contract关键字，这过程看起来就像创建一个新的合约一样。
+* 2.在interface里定义了getKitty函数（不过时复制/粘贴上面的函数，但在returns语言之后用分号，而不是大括号内的所有内容）。
+
+zombiefeeding.sol
+
+```solidity
+pragma solidity ^0.4.19;
+
+import "./zombiefactory.sol";
+
+// Create KittyInterface here
+contract KittyInterface {
+    function getKitty(uint256 _id) external view returns (
+    bool isGestating,
+    bool isReady,
+    uint256 cooldownIndex,
+    uint256 nextActionAt,
+    uint256 siringWithId,
+    uint256 birthTime,
+    uint256 matronId,
+    uint256 sireId,
+    uint256 generation,
+    uint256 genes
+    );
+}
+
+contract ZombieFeeding is ZombieFactory {
+
+  function feedAndMultiply(uint _zombieId, uint _targetDna) public {
+    require(msg.sender == zombieToOwner[_zombieId]);
+    Zombie storage myZombie = zombies[_zombieId];
+    _targetDna = _targetDna % dnaModulus;
+    uint newDna = (myZombie.dna + _targetDna) / 2;
+    _createZombie("NoName", newDna);
+  }
+
+}
+```
+
